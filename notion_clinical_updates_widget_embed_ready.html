@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Clinical & Research Updates Widget</title>
+  <style>
+    :root { --bg: #ffffff; --fg: #1f2937; --muted:#6b7280; --card:#f9fafb; --accent:#2563eb; --ok:#059669; --warn:#d97706; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#0b1220; --fg:#e5e7eb; --muted:#9ca3af; --card:#0f172a; --accent:#60a5fa; --ok:#34d399; --warn:#f59e0b; }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; background: var(--bg); color: var(--fg); }
+    .wrap { max-width: 1000px; margin: 0 auto; padding: 16px; }
+    h1 { font-size: 1.25rem; margin: 0 0 4px; }
+    p { margin: 8px 0; color: var(--muted); }
+    .bar { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; position: sticky; top: 0; background: var(--bg); padding: 8px 0; z-index: 10; }
+    input[type="text"]{ width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid #e5e7eb; background: var(--card); color: var(--fg); outline: none; }
+    button { border: 0; padding: 10px 14px; border-radius: 10px; background: var(--accent); color: white; cursor: pointer; }
+    button.secondary { background: transparent; color: var(--fg); border: 1px solid #374151; }
+    .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+    .tab { padding: 6px 10px; border-radius: 999px; border: 1px solid #374151; cursor: pointer; user-select: none; }
+    .tab.active { background: var(--accent); color:#fff; border-color: var(--accent); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+    .card { background: var(--card); border: 1px solid #1f2937; padding: 14px; border-radius: 16px; }
+    .title { font-weight: 600; margin-bottom: 6px; }
+    .meta { font-size: 0.82rem; color: var(--muted); }
+    .pill { display: inline-block; font-size: 0.72rem; padding: 3px 8px; border: 1px solid #374151; border-radius: 999px; margin-right: 6px; }
+    .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    a { color: var(--accent); text-decoration: none; }
+    .section { margin: 18px 0 10px; display: flex; align-items: center; justify-content: space-between; }
+    .help { font-size: 0.9rem; color: var(--muted); }
+    .disclaimer { font-size: 0.8rem; color: var(--muted); margin-top: 8px; }
+    .empty { padding: 20px; text-align: center; color: var(--muted); border: 1px dashed #374151; border-radius: 12px; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Clinical & Research Updates</h1>
+  <p class="help">Enter your topic (e.g., "acute coronary syndrome", "cellulitis"). You can also pass it via URL like <code>?topic=acute%20coronary%20syndrome</code>.</p>
+
+  <div class="bar">
+    <input id="topic" type="text" placeholder="Topic…"/>
+    <div class="row">
+      <button id="run">Update</button>
+      <button id="save" class="secondary" title="Stores topic in your browser for this page only">Save</button>
+    </div>
+  </div>
+
+  <div class="tabs" id="filters">
+    <div class="tab active" data-mode="all">All</div>
+    <div class="tab" data-mode="guidelines">Guidelines</div>
+    <div class="tab" data-mode="rct">RCTs</div>
+    <div class="tab" data-mode="reviews">Reviews</div>
+    <div class="tab" data-mode="trials">ClinicalTrials.gov</div>
+    <div class="tab" data-mode="recent">Last 30 days</div>
+  </div>
+
+  <div class="section">
+    <h2 style="font-size:1rem;margin:0;">PubMed</h2>
+    <small id="pm-count" class="help"></small>
+  </div>
+  <div id="pubmed" class="grid"></div>
+
+  <div class="section">
+    <h2 style="font-size:1rem;margin:0;">ClinicalTrials.gov</h2>
+    <small id="ct-count" class="help"></small>
+  </div>
+  <div id="trials" class="grid"></div>
+
+  <p class="disclaimer">This widget shows recent publications and trials for education only. It is not medical advice. Verify with local guidelines and formularies.</p>
+</div>
+
+<script>
+const $ = (q) => document.querySelector(q);
+const params = new URLSearchParams(location.search);
+const topicInput = $('#topic');
+const runBtn = $('#run');
+const saveBtn = $('#save');
+const tabs = $('#filters');
+let mode = 'all';
+
+// Init topic from URL or localStorage
+const LSKEY = 'notion-clinical-topic';
+const initTopic = params.get('topic') || localStorage.getItem(LSKEY) || '';
+if (initTopic) topicInput.value = decodeURIComponent(initTopic);
+
+saveBtn.addEventListener('click', () => {
+  localStorage.setItem(LSKEY, topicInput.value.trim());
+  saveBtn.textContent = 'Saved';
+  setTimeout(()=> saveBtn.textContent='Save', 1200);
+});
+
+runBtn.addEventListener('click', () => refresh());
+
+tabs.addEventListener('click', (e) => {
+  const t = e.target.closest('.tab');
+  if (!t) return;
+  for (const el of tabs.children) el.classList.remove('active');
+  t.classList.add('active');
+  mode = t.dataset.mode;
+  refresh();
+});
+
+function dateToYMD(d){ const dt = new Date(d); return dt.toISOString().slice(0,10); }
+function daysAgo(n){ const d = new Date(); d.setDate(d.getDate()-n); return dateToYMD(d); }
+
+async function fetchPubMed(q){
+  const base = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/';
+  const dateFilter = (mode==='recent') ? ` AND ("${daysAgo(30)}"[PDAT] : "3000"[PDAT])` : ` AND ("${daysAgo(730)}"[PDAT] : "3000"[PDAT])`;
+  let typeFilter = '';
+  if (mode==='guidelines') typeFilter = ' AND practice guideline[Publication Type]';
+  if (mode==='rct') typeFilter = ' AND randomized controlled trial[Publication Type]';
+  if (mode==='reviews') typeFilter = ' AND review[Publication Type]';
+
+  const term = encodeURIComponent(`${q}${dateFilter}${typeFilter}`);
+  const esearch = `${base}esearch.fcgi?db=pubmed&retmode=json&sort=pub+date&retmax=18&term=${term}`;
+  const esResp = await fetch(esearch);
+  if (!esResp.ok) throw new Error('PubMed search failed');
+  const es = await esResp.json();
+  const ids = es.esearchresult?.idlist || [];
+  if (!ids.length) return [];
+  const esum = `${base}esummary.fcgi?db=pubmed&retmode=json&id=${ids.join(',')}`;
+  const sumResp = await fetch(esum);
+  const sum = await sumResp.json();
+  const out = [];
+  for (const id of ids){
+    const it = sum.result[id];
+    if (!it) continue;
+    out.push({
+      id,
+      title: it.title,
+      journal: it.fulljournalname,
+      pubdate: it.pubdate || it.epubdate,
+      authors: (it.authors||[]).slice(0,3).map(a=>a.name).join(', '),
+      link: `https://pubmed.ncbi.nlm.nih.gov/${id}/`,
+      pubtype: (it.pubtype||[]).join(', ')
+    });
+  }
+  return out;
+}
+
+async function fetchTrials(q){
+  // ClinicalTrials.gov v1 Study Fields API for broad compatibility
+  const url = `https://clinicaltrials.gov/api/query/study_fields?expr=${encodeURIComponent(q)}&fields=NCTId,BriefTitle,Condition,OverallStatus,StudyType,StartDate,LastUpdateSubmitDate&min_rnk=1&max_rnk=18&fmt=json`;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error('ClinicalTrials.gov search failed');
+  const data = await resp.json();
+  const rows = data?.StudyFieldsResponse?.StudyFields || [];
+  return rows.map(r => ({
+    id: r.NCTId?.[0],
+    title: r.BriefTitle?.[0],
+    cond: r.Condition?.slice(0,2).join(', '),
+    status: r.OverallStatus?.[0],
+    type: r.StudyType?.[0],
+    start: r.StartDate?.[0],
+    updated: r.LastUpdateSubmitDate?.[0],
+    link: r.NCTId?.[0] ? `https://clinicaltrials.gov/study/${r.NCTId[0]}` : '#'
+  }));
+}
+
+function cardPub(item){
+  return `<div class="card">
+    <div class="title"><a href="${item.link}" target="_blank" rel="noopener">${item.title}</a></div>
+    <div class="meta">${item.journal || ''} · ${item.pubdate || ''}</div>
+    <div class="meta">${item.authors || ''}</div>
+    <div class="row" style="margin-top:8px;">
+      ${item.pubtype ? `<span class="pill">${item.pubtype}</span>` : ''}
+    </div>
+  </div>`
+}
+
+function cardTrial(t){
+  const statusColor = (s)=>{
+    const st = (s||'').toLowerCase();
+    if (st.includes('recruit')||st.includes('enrolling')) return 'var(--ok)';
+    if (st.includes('completed')||st.includes('terminated')) return 'var(--warn)';
+    return 'var(--muted)';
+  }
+  return `<div class="card">
+    <div class="title"><a href="${t.link}" target="_blank" rel="noopener">${t.title || 'Untitled study'}</a></div>
+    <div class="meta">${t.cond || ''}</div>
+    <div class="row" style="margin-top:8px;">
+      <span class="pill" style="border-color:${statusColor(t.status)}; color:${statusColor(t.status)};">${t.status || 'Status N/A'}</span>
+      <span class="pill">${t.type || 'Type N/A'}</span>
+    </div>
+    <div class="meta" style="margin-top:8px;">NCT: ${t.id || '—'} · Start: ${t.start || '—'} · Updated: ${t.updated || '—'}</div>
+  </div>`
+}
+
+async function refresh(){
+  const q = topicInput.value.trim();
+  const pmWrap = $('#pubmed');
+  const ctWrap = $('#trials');
+  const pmCount = $('#pm-count');
+  const ctCount = $('#ct-count');
+  pmWrap.innerHTML = '<div class="empty">Loading PubMed…</div>';
+  ctWrap.innerHTML = '<div class="empty">Loading ClinicalTrials.gov…</div>';
+  pmCount.textContent = '';
+  ctCount.textContent = '';
+  if (!q){
+    pmWrap.innerHTML = '<div class="empty">Enter a topic to see recent publications.</div>';
+    ctWrap.innerHTML = '<div class="empty">Enter a topic to see related trials.</div>';
+    return;
+  }
+  try {
+    const [pubs, trials] = await Promise.all([fetchPubMed(q), fetchTrials(q)]);
+    pmCount.textContent = pubs.length ? `${pubs.length} shown` : 'No results';
+    ctCount.textContent = trials.length ? `${trials.length} shown` : 'No results';
+    pmWrap.innerHTML = pubs.length ? pubs.map(cardPub).join('') : '<div class="empty">No PubMed results for this filter.</div>';
+    const trialsFiltered = (mode==='trials' || mode==='recent') ? trials.filter(t => true) : trials; // keep simple
+    ctWrap.innerHTML = trialsFiltered.length ? trialsFiltered.map(cardTrial).join('') : '<div class="empty">No trial records found.</div>';
+  } catch(err){
+    pmWrap.innerHTML = `<div class="empty">Error: ${err.message}</div>`;
+    ctWrap.innerHTML = `<div class="empty">Error: ${err.message}</div>`;
+  }
+}
+
+// Auto-run on load
+refresh();
+</script>
+</body>
+</html>
