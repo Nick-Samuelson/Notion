@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Clinical & Research Updates Widget</title>
+  <style>
+    :root { --bg: #ffffff; --fg: #1f2937; --muted:#6b7280; --card:#f9fafb; --accent:#2563eb; --ok:#059669; --warn:#d97706; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#0b1220; --fg:#e5e7eb; --muted:#9ca3af; --card:#0f172a; --accent:#60a5fa; --ok:#34d399; --warn:#f59e0b; }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; background: var(--bg); color: var(--fg); }
+    .wrap { max-width: 1000px; margin: 0 auto; padding: 16px; }
+    h1 { font-size: 1.25rem; margin: 0 0 4px; }
+    p { margin: 8px 0; color: var(--muted); }
+    .bar { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; position: sticky; top: 0; background: var(--bg); padding: 8px 0; z-index: 10; }
+    input[type="text"]{ width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid #e5e7eb; background: var(--card); color: var(--fg); outline: none; }
+    button { border: 0; padding: 10px 14px; border-radius: 10px; background: var(--accent); color: white; cursor: pointer; }
+    button.secondary { background: transparent; color: var(--fg); border: 1px solid #374151; }
+    .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+    .tab { padding: 6px 10px; border-radius: 999px; border: 1px solid #374151; cursor: pointer; user-select: none; }
+    .tab.active { background: var(--accent); color:#fff; border-color: var(--accent); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+    .card { background: var(--card); border: 1px solid #1f2937; padding: 14px; border-radius: 16px; }
+    .title { font-weight: 600; margin-bottom: 6px; }
+    .meta { font-size: 0.82rem; color: var(--muted); }
+    .pill { display: inline-block; font-size: 0.72rem; padding: 3px 8px; border: 1px solid #374151; border-radius: 999px; margin-right: 6px; }
+    .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    a { color: var(--accent); text-decoration: none; }
+    .section { margin: 18px 0 10px; display: flex; align-items: center; justify-content: space-between; }
+    .help { font-size: 0.9rem; color: var(--muted); }
+    .disclaimer { font-size: 0.8rem; color: var(--muted); margin-top: 8px; }
+    .empty { padding: 20px; text-align: center; color: var(--muted); border: 1px dashed #374151; border-radius: 12px; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Clinical & Research Updates</h1>
+  <p class="help">Enter your topic (e.g., "acute coronary syndrome", "cellulitis"). You can also pass it via URL like <code>?topic=acute%20coronary%20syndrome</code>.</p>
+
+  <div class="bar">
+    <input id="topic" type="text" placeholder="Topic…"/>
+    <div class="row">
+      <button id="run">Update</button>
+      <button id="save" class="secondary" title="Stores topic in your browser for this page only">Save</button>
+    </div>
+  </div>
+
+  <div class="tabs" id="filters">
+    <div class="tab active" data-mode="all">All</div>
+    <div class="tab" data-mode="guidelines">Guidelines</div>
+    <div class="tab" data-mode="rct">RCTs</div>
+    <div class="tab" data-mode="reviews">Reviews</div>
+    <div class="tab" data-mode="trials">ClinicalTrials.gov</div>
+    <div class="tab" data-mode="recent">Last 30 days</div>
+  </div>
+
+  <div class="section">
+    <h2 style="font-size:1rem;margin:0;">PubMed</h2>
+    <small id="pm-count" class="help"></small>
+  </div>
+  <div id="pubmed" class="grid"></div>
+
+  <div class="section">
+    <h2 style="font-size:1rem;margin:0;">ClinicalTrials.gov</h2>
+    <small id="ct-count" class="help"></small>
+  </div>
+  <div id="trials" class="grid"></div>
+
+  <p class="disclaimer">This widget shows recent publications and trials for education only. It is not medical advice. Verify with local guidelines and formularies.</p>
+</div>
+
+<script>
+const $ = (q) => document.querySelector(q);
+const params = new URLSearchParams(location.search);
+const topicInput = $('#topic');
+const runBtn = $('#run');
+const saveBtn = $('#save');
+const tabs = $('#filters');
+let mode = 'all';
+const LSKEY = 'notion-clinical-topic';
+const initTopic = params.get('topic') || localStorage.getItem(LSKEY) || '';
+if (initTopic) topicInput.value = initTopic;
+function dateToYMD(d){ const dt = new Date(d); return dt.toISOString().slice(0,10); }
+function daysAgo(n){ const d = new Date(); d.setDate(d.getDate()-n); return dateToYMD(d); }
+function el(tag, attrs = {}, children = []){ const e = document.createElement(tag); for (const k in attrs){ if (k === 'text'){ e.textContent = attrs[k]; } else if (k === 'html'){ e.innerHTML = attrs[k]; } else { e.setAttribute(k, attrs[k]); } } for (const c of children){ if (typeof c === 'string'){ e.appendChild(document.createTextNode(c)); } else if (c){ e.appendChild(c); } } return e; }
+async function fetchPubMed(q){
+  const base = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/';
+  const dateFilter = (mode==='recent') ? ` AND ("${daysAgo(30)}"[PDAT] : "3000"[PDAT])` : ` AND ("${daysAgo(730)}"[PDAT] : "3000"[PDAT])`;
+  let typeFilter = '';
+  if (mode==='guidelines') typeFilter = ' AND practice guideline[Publication Type]';
+  if (mode==='rct') typeFilter = ' AND randomized controlled trial[Publication Type]';
+  if (mode==='reviews') typeFilter = ' AND review[Publication Type]';
+  const term = encodeURIComponent(`${q}${dateFilter}${typeFilter}`);
+  const esearch = `${base}esearch.fcgi?db=pubmed&retmode=json&sort=pub+date&retmax=18&term=${term}`;
+  const esResp = await fetch(esearch);
+  if (!esResp.ok) throw new Error('PubMed search failed');
+  const es = await esResp.json();
+  const ids = es.esearchresult && es.esearchresult.idlist ? es.esearchresult.idlist : [];
+  if (!ids.length) return [];
+  const esum = `${base}esummary.fcgi?db=pubmed&retmode=json&id=${ids.join(',')}`;
+  const sumResp = await fetch(esum);
+  if (!sumResp.ok) throw new Error('PubMed summary failed');
+  const sum = await sumResp.json();
+  const out = [];
+  for (const id of ids){
+    const it = sum.result && sum.result[id] ? sum.result[id] : null;
+    if (!it) continue;
+    out.push({
+      id,
+      title: it.title || 'Untitled',
+      journal: it.fulljournalname || '',
+      pubdate: it.pubdate || it.epubdate || '',
+      authors: (it.authors||[]).slice(0,3).map(a=>a.name).join(', '),
+      link: `https://pubmed.ncbi.nlm.nih.gov/${id}/`,
+      pubtype: (it.pubtype||[]).join(', ')
+    });
+  }
+  return out;
+}
+async function fetchTrials(q){
+  const url = `https://clinicaltrials.gov/api/query/study_fields?expr=${encodeURIComponent(q)}&fields=NCTId,BriefTitle,Condition,OverallStatus,StudyType,StartDate,LastUpdateSubmitDate&min_rnk=1&max_rnk=18&fmt=json`;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error('ClinicalTrials.gov search failed');
+  const data = await resp.json();
+  const rows = data && data.StudyFieldsResponse && data.StudyFieldsResponse.StudyFields ? data.StudyFieldsResponse.StudyFields : [];
+  return rows.map(r => ({
+    id: r.NCTId && r.NCTId[0] ? r.NCTId[0] : '',
+    title: r.BriefTitle && r.BriefTitle[0] ? r.BriefTitle[0] : 'Untitled study',
+    cond: Array.isArray(r.Condition) ? r.Condition.slice(0,2).join(', ') : '',
+    status: r.OverallStatus && r.OverallStatus[0] ? r.OverallStatus[0] : '',
+    type: r.StudyType && r.StudyType[0] ? r.StudyType[0] : '',
+    start: r.StartDate && r.StartDate[0] ? r.StartDate[0] : '',
+    updated: r.LastUpdateSubmitDate && r.LastUpdateSubmitDate[0] ? r.LastUpdateSubmitDate[0] : '',
+    link: r.NCTId && r.NCTId[0] ? `https://clinicaltrials.gov/study/${r.NCTId[0]}` : '#'
+  }));
+}
+function cardPub(item){
+  const card = el('div', { class: 'card' });
+  const titleLink = el('a', { href: item.link, target: '_blank', rel: 'noopener' , text: item.title });
+  const title = el('div', { class: 'title' }, [titleLink]);
+  const meta1 = el('div', { class: 'meta', text: [item.journal || '', item.pubdate || ''].filter(Boolean).join(' · ') });
+  const meta2 = el('div', { class: 'meta', text: item.authors || '' });
+  const row = el('div', { class: 'row', style: 'margin-top:8px;' });
+  if (item.pubtype){
+    const pill = el('span', { class: 'pill', text: item.pubtype });
+    row.appendChild(pill);
+  }
+  card.appendChild(title);
+  card.appendChild(meta1);
+  card.appendChild(meta2);
+  card.appendChild(row);
+  return card.outerHTML;
+}
+function cardTrial(t){
+  const st = (t.status||'').toLowerCase();
+  let color = 'var(--muted)';
+  if (st.includes('recruit') || st.includes('enrolling')) color = 'var(--ok)';
+  if (st.includes('completed') || st.includes('terminated')) color = 'var(--warn)';
+  const card = el('div', { class: 'card' });
+  const link = el('a', { href: t.link, target: '_blank', rel: 'noopener', text: t.title || 'Untitled study' });
+  const title = el('div', { class: 'title' }, [link]);
+  const meta = el('div', { class: 'meta', text: t.cond || '' });
+  const row = el('div', { class: 'row', style: 'margin-top:8px;' });
+  const pill1 = el('span', { class: 'pill', style: `border-color:${color}; color:${color};`, text: t.status || 'Status N/A' });
+  const pill2 = el('span', { class: 'pill', text: t.type || 'Type N/A' });
+  const meta2 = el('div', { class: 'meta', style: 'margin-top:8px;', text: `NCT: ${t.id || '—'} · Start: ${t.start || '—'} · Updated: ${t.updated || '—'}` });
+  row.appendChild(pill1);
+  row.appendChild(pill2);
+  card.appendChild(title);
+  card.appendChild(meta);
+  card.appendChild(row);
+  card.appendChild(meta2);
+  return card.outerHTML;
+}
+function setActiveTab(elm){ for (const el of tabs.children) el.classList.remove('active'); elm.classList.add('active'); }
+saveBtn.addEventListener('click', () => { localStorage.setItem(LSKEY, topicInput.value.trim()); saveBtn.textContent = 'Saved'; setTimeout(()=> saveBtn.textContent='Save', 1200); });
+runBtn.addEventListener('click', () => refresh());
+tabs.addEventListener('click', (e) => { const t = e.target.closest('.tab'); if (!t) return; setActiveTab(t); mode = t.dataset.mode; refresh(); });
+async function refresh(){
+  const q = topicInput.value.trim();
+  const pmWrap = $('#pubmed');
+  const ctWrap = $('#trials');
+  const pmCount = $('#pm-count');
+  const ctCount = $('#ct-count');
+  pmWrap.textContent='';
+  ctWrap.textContent='';
+  pmCount.textContent = '';
+  ctCount.textContent = '';
+  if (!q){
+    pmWrap.appendChild(el('div',{class:'empty',text:'Enter a topic to see recent publications.'}));
+    ctWrap.appendChild(el('div',{class:'empty',text:'Enter a topic to see related trials.'}));
+    return;
+  }
+  pmWrap.appendChild(el('div',{class:'empty',text:'Loading PubMed…'}));
+  ctWrap.appendChild(el('div',{class:'empty',text:'Loading ClinicalTrials.gov…'}));
+  try {
+    const [pubs, trials] = await Promise.all([fetchPubMed(q), fetchTrials(q)]);
+    pmCount.textContent = pubs.length ? `${pubs.length} shown` : 'No results';
+    ctCount.textContent = trials.length ? `${trials.length} shown` : 'No results';
+    pmWrap.innerHTML = '';
+    ctWrap.innerHTML = '';
+    if (pubs.length){ pmWrap.innerHTML = pubs.map(cardPub).join(''); } else { pmWrap.appendChild(el('div',{class:'empty',text:'No PubMed results for this filter.'})); }
+    const trialsFiltered = trials;
+    if (trialsFiltered.length){ ctWrap.innerHTML = trialsFiltered.map(cardTrial).join(''); } else { ctWrap.appendChild(el('div',{class:'empty',text:'No trial records found.'})); }
+  } catch(err){
+    pmWrap.innerHTML = '';
+    ctWrap.innerHTML = '';
+    pmWrap.appendChild(el('div',{class:'empty',text:`Error: ${err.message}`}));
+    ctWrap.appendChild(el('div',{class:'empty',text:`Error: ${err.message}`}));
+  }
+}
+refresh();
+</script>
+</body>
+</html>
